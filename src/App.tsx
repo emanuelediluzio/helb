@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { describeImage } from './services/openrouter'
+import { speakWithElevenLabs } from './services/voice'
 import './App.css'
 
 type DescriptionEntry = {
@@ -15,30 +16,36 @@ function App() {
   const [cameraStatus, setCameraStatus] = useState<'idle' | 'starting' | 'active' | 'error'>(
     'idle',
   )
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState('Preparazione della fotocamera...')
   const [error, setError] = useState<string | null>(null)
   const [lastDescription, setLastDescription] = useState<DescriptionEntry | null>(null)
   const [isDescribing, setIsDescribing] = useState(false)
-  const [autoMode, setAutoMode] = useState(true)
-  const [voiceEnabled, setVoiceEnabled] = useState(true)
   const [lastSpoken, setLastSpoken] = useState('')
   const [lastLatency, setLastLatency] = useState<number | null>(null)
+  const pendingAudioRef = useRef<HTMLAudioElement | null>(null)
 
   const speakText = useCallback(
     (text: string) => {
-      if (!voiceEnabled || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      if (typeof window === 'undefined') {
         return
       }
 
-      window.speechSynthesis.cancel()
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.lang = 'en-US'
-      utterance.rate = 1
-      utterance.pitch = 1
-      window.speechSynthesis.speak(utterance)
-      setLastSpoken(text)
+      if (pendingAudioRef.current) {
+        pendingAudioRef.current.pause()
+        pendingAudioRef.current = null
+      }
+
+      void speakWithElevenLabs(text)
+        .then((audio) => {
+          pendingAudioRef.current = audio
+          setLastSpoken(text)
+        })
+        .catch((ttsError) => {
+          console.error(ttsError)
+          setError('Sintesi vocale non disponibile in questo momento.')
+        })
     },
-    [voiceEnabled],
+    [],
   )
 
   const stopCamera = useCallback(() => {
@@ -53,7 +60,7 @@ function App() {
   const startCamera = useCallback(async () => {
     stopCamera()
     setError(null)
-    setStatus('Requesting camera access...')
+    setStatus('Attivazione fotocamera...')
     setCameraStatus('starting')
 
     try {
@@ -68,13 +75,13 @@ function App() {
         videoRef.current.srcObject = stream
         await videoRef.current.play()
         setCameraStatus('active')
-        setStatus('Camera is live. Auto description is running every few seconds.')
+        setStatus('In ascolto della scena, aggiornamento automatico ogni pochi secondi.')
       }
     } catch (cameraError) {
       console.error(cameraError)
       setCameraStatus('error')
-      setError('Camera access failed. Please allow camera permissions and try again.')
-      setStatus('Unable to start the camera')
+      setError('Accesso alla fotocamera non riuscito. Concedi i permessi e riprova.')
+      setStatus('Impossibile avviare la fotocamera')
     }
   }, [stopCamera])
 
@@ -104,22 +111,15 @@ function App() {
         return
       }
 
-      if (!import.meta.env.VITE_OPENROUTER_API_KEY) {
-        setError('Add VITE_OPENROUTER_API_KEY to your environment to enable OpenRouter vision calls.')
-        setStatus('API key missing. Auto mode paused until configured.')
-        setAutoMode(false)
-        return
-      }
-
       const frame = captureFrame()
 
       if (!frame) {
-        setStatus('Waiting for a clear camera frame...')
+        setStatus('In attesa di un fotogramma nitido dalla fotocamera...')
         return
       }
 
       setIsDescribing(true)
-      setStatus(trigger === 'auto' ? 'Updating description...' : 'Describing the scene now...')
+      setStatus('Analisi in corso...')
 
       const start = performance.now()
 
@@ -128,10 +128,23 @@ function App() {
         setLastLatency(Math.round(performance.now() - start))
 
         const cleaned = description.trim()
-        setLastDescription({ text: cleaned, timestamp: Date.now() })
-        setError(null)
+        const isSameAsLast = lastDescription?.text === cleaned
+        const now = Date.now()
 
-        if (voiceEnabled && cleaned !== lastSpoken) {
+        if (isSameAsLast && trigger === 'auto') {
+          setLastDescription({ text: cleaned, timestamp: now })
+          setStatus('Situazione invariata, continuo a monitorare.')
+          if (lastSpoken !== 'Situazione invariata.') {
+            speakText('Situazione invariata.')
+          }
+          return
+        }
+
+        setLastDescription({ text: cleaned, timestamp: now })
+        setError(null)
+        setStatus('Descrizione aggiornata e letta ad alta voce.')
+
+        if (cleaned !== lastSpoken) {
           speakText(cleaned)
         }
       } catch (inferenceError) {
@@ -139,14 +152,14 @@ function App() {
         const message =
           inferenceError instanceof Error
             ? inferenceError.message
-            : 'Unable to describe the scene right now.'
+            : 'Impossibile descrivere la scena in questo momento.'
         setError(message)
-        setStatus('Waiting before retrying...')
+        setStatus('Attendo prima di riprovare...')
       } finally {
         setIsDescribing(false)
       }
     },
-    [captureFrame, isDescribing, lastSpoken, speakText, voiceEnabled],
+    [captureFrame, isDescribing, lastDescription, lastSpoken, speakText],
   )
 
   useEffect(() => {
@@ -158,32 +171,20 @@ function App() {
   }, [startCamera, stopCamera])
 
   useEffect(() => {
-    if (!autoMode) {
-      return undefined
-    }
-
     const interval = window.setInterval(() => {
       void requestDescription('auto')
     }, CAPTURE_INTERVAL_MS)
 
     return () => window.clearInterval(interval)
-  }, [autoMode, requestDescription])
+  }, [requestDescription])
 
   return (
     <div className="page">
-      <header className="hero">
+      <header className="hero minimal">
         <div>
-          <p className="eyebrow">Mobile-first · Live AI narration</p>
+          <p className="eyebrow">Auto assistenza visiva</p>
           <h1>Eyes Up</h1>
-          <p className="lede">
-            Keep the camera running and let the assistant narrate what it sees in clear English. The view stays on screen
-            while the description is read aloud for hands-free accessibility.
-          </p>
-        </div>
-        <div className="pills">
-          <span className="pill">Grok 4.1 fast</span>
-          <span className="pill">Vision ready</span>
-          <span className="pill">Voice enabled</span>
+          <p className="lede">Descrizione vocale automatica, ogni 6 secondi, senza controlli da toccare.</p>
         </div>
       </header>
 
@@ -191,48 +192,14 @@ function App() {
         <section className="card video-card">
           <div className="card-header">
             <div>
-              <p className="overline">Live camera</p>
-              <h2>{cameraStatus === 'active' ? 'Streaming' : 'Camera control'}</h2>
+              <p className="overline">Fotocamera</p>
+              <h2>{cameraStatus === 'active' ? 'Streaming' : 'Inizializzazione'}</h2>
             </div>
             <div className={`status-dot ${cameraStatus}`} aria-label={`Camera status: ${cameraStatus}`}></div>
           </div>
 
           <div className="video-shell">
             <video ref={videoRef} className="video" playsInline autoPlay muted aria-label="Live camera feed" />
-            <div className="overlay">
-              <p className="overlay-text">Camera stays on. Point it at the scene you need described.</p>
-            </div>
-          </div>
-
-          <div className="actions">
-            <button className="primary" onClick={() => void requestDescription('manual')} disabled={isDescribing}>
-              {isDescribing ? 'Listening to the scene...' : 'Describe now'}
-            </button>
-            <button className="ghost" onClick={() => void startCamera()}>
-              Restart camera
-            </button>
-            <button className="ghost" onClick={stopCamera}>
-              Stop camera
-            </button>
-          </div>
-
-          <div className="toggles">
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={autoMode}
-                onChange={(event) => setAutoMode(event.target.checked)}
-              />
-              <span>Auto describe every {Math.round(CAPTURE_INTERVAL_MS / 1000)}s</span>
-            </label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={voiceEnabled}
-                onChange={(event) => setVoiceEnabled(event.target.checked)}
-              />
-              <span>Speak results aloud</span>
-            </label>
           </div>
 
           <p className="status" aria-live="polite">
@@ -248,8 +215,8 @@ function App() {
         <section className="card description-card" aria-live="assertive">
           <div className="card-header">
             <div>
-              <p className="overline">Narration</p>
-              <h2>What the model sees</h2>
+              <p className="overline">Narrazione</p>
+              <h2>Cosa vede il modello</h2>
             </div>
             {lastLatency ? <span className="pill small">{lastLatency} ms</span> : null}
           </div>
@@ -257,10 +224,10 @@ function App() {
           {lastDescription ? (
             <>
               <p className="description">{lastDescription.text}</p>
-              <p className="timestamp">Updated {new Date(lastDescription.timestamp).toLocaleTimeString()}</p>
+              <p className="timestamp">Aggiornato alle {new Date(lastDescription.timestamp).toLocaleTimeString()}</p>
             </>
           ) : (
-            <p className="placeholder">Waiting for the first description...</p>
+            <p className="placeholder">In attesa della prima descrizione...</p>
           )}
         </section>
       </main>

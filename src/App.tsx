@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { describeImage } from './services/openrouter'
-import { speakWithElevenLabs } from './services/voice'
+import { speakWithSupertonic } from './services/supertonicVoice'
 import './App.css'
 
 type DescriptionEntry = {
@@ -35,7 +35,7 @@ function App() {
         pendingAudioRef.current = null
       }
 
-      void speakWithElevenLabs(text)
+      void speakWithSupertonic(text)
         .then((audio) => {
           pendingAudioRef.current = audio
           setLastSpoken(text)
